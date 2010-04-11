@@ -1,0 +1,1 @@
+The simplest "language":  It just returns static integers
