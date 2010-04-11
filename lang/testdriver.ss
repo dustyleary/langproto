@@ -51,7 +51,7 @@
 
 (define-macro (test-case expect-output program)
   `(let [
-      (output (run-program ,program))
+      (output (run-program ',program))
     ]
     (if
       (not (string=? output ,expect-output))
