@@ -38,7 +38,6 @@
 
   (define-struct varref (compiled_id))
 
-
   (define (compile-expr-primop x)
     (let* [
       (op (list-ref x 0))
