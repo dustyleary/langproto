@@ -51,7 +51,10 @@
       (cmdline "llvmc driver.c out.ll -o out")
     ]
     (myexec cmdline)
-    (myexec "./out")
+    (if (equal? 'windows (system-type 'os))
+      (myexec "out")
+      (myexec "./out")
+    )
   )
 )
 
