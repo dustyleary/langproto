@@ -36,8 +36,14 @@
   )
 )
 
+(define (llvm-target-info)
+  (define f (open-output-file ".temp.c" #:exists 'replace))
+  (close-output-port f)
+  (myexec "llvm-gcc --emit-llvm -S .temp.c -o -")
+)
+
 (define (run-program program)
-  (define asm (compile-text program))
+  (define asm (string-append (llvm-target-info) (compile-text program)))
   (define f (open-output-file "out.ll" #:exists 'replace))
   (display asm f)
   (close-output-port f)
@@ -45,7 +51,7 @@
       (cmdline "llvmc driver.c out.ll -o out")
     ]
     (myexec cmdline)
-    (myexec "out")
+    (myexec "./out")
   )
 )
 
