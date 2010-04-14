@@ -3,12 +3,12 @@
 
 (load "compile.ss")
 
-(define (compile-text program)
+(define (compile-text t . ts)
   (call-with-output-string
     (lambda (p)
       (parameterize
         ([current-output-port p])
-        (compile-program program)))))
+        (apply compile-program (cons t ts))))))
 
 (define (myexec cmdline)
   (define out (open-output-string))
@@ -42,8 +42,8 @@
   (myexec "llvm-gcc --emit-llvm -S .temp.c -o -")
 )
 
-(define (run-program program)
-  (define asm (string-append (llvm-target-info) (compile-text program)))
+(define (run-program t . ts)
+  (define asm (string-append (llvm-target-info) (apply compile-text (cons t ts))))
   (define f (open-output-file "out.ll" #:exists 'replace))
   (display asm f)
   (close-output-port f)
@@ -58,9 +58,9 @@
   )
 )
 
-(define-macro (test-case expect-output program)
+(define-macro (test-case expect-output t . ts)
   `(let [
-      (output (run-program ',program))
+      (output (apply run-program '(,t . ,ts)))
     ]
     (if
       (not (string=? output ,expect-output))
@@ -68,7 +68,7 @@
         (display "FAIL") (newline)
         (display "expected: ") (display ,expect-output) (newline)
         (display "received: ") (display output) (newline)
-        (display "program: ") (write ',program) (newline)
+        (display "program: ") (write '(,t ,ts)) (newline)
         (exit 1)
       )
       (begin

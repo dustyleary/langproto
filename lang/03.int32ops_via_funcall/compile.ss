@@ -15,7 +15,7 @@
   ])
 )
 
-(define (compile-program x)
+(define (compile-program x . xs)
   (hash-map opfuns (lambda (k v) (emit "declare i32 @" v "(i32, i32) nounwind readonly"))) 
   (emit "define i32 @scheme_entry() {")
   (emit "entry:")

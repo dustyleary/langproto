@@ -1,4 +1,4 @@
-(define (emit v . vv) (display v) (map display vv))
+(define (emit v . vv) (map display (cons v vv)))
 
 (define primopasms '[
   (+ . "add nsw i32")
@@ -13,13 +13,16 @@
   (<< . "shl i32")
 ])
 
-(define (compile-program x . xs)
+(define (compile-program def . defs)
   (define uniqid 0)
   (define (get-uniqid) (let ((v uniqid)) (set! uniqid (+ 1 uniqid)) (string-append "%x" (number->string v))))
 
-  (define scope-chain '())
+  (define (make-scope) (make-hash))
+  (define global-scope (make-scope))
+
+  (define scope-chain '(global-scope))
   (define (push-scope-chain)
-    (let [(new-scope (make-hash))]
+    (let [(new-scope (make-scope))]
       (set! scope-chain (cons new-scope scope-chain))
     )
   )
@@ -82,10 +85,35 @@
     )
   )
 
+  (define (compile-expr-funapply x)
+    (let* [
+      (n (car x))
+      (args (cdr x))
+      (compiled-args (map compile-expr args))
+      (id (get-uniqid))
+      ]
+      (begin
+        (emit "  " id " = tail call i32 @" n "(")
+        (if (null? compiled-args) #f
+          (let [
+            (a0 (car compiled-args))
+            (an (cdr compiled-args))
+            ]
+            (emit "i32 " a0)
+            (map (lambda (a) (emit ", i32 " a)) an)
+          )
+        )
+        (emit ") nounwind") (newline)
+        id
+      )
+    )
+  )
+
   (define (compile-expr-apply x)
     (cond
       [(equal? (car x) 'let) (compile-expr-let x)]
       [(member (car x) (map car primopasms)) (compile-expr-primop x)]
+      ((symbol? (car x)) (compile-expr-funapply x))
       [else (error (string-append "can't compile application. unhandled first element: " (format "~a" x)))]
     )
   )
@@ -99,9 +127,36 @@
     )
   )
 
-  (emit "define i32 @scheme_entry() {") (newline)
-  (emit "entry:") (newline)
-  (emit "  ret i32 " (compile-expr x)) (newline)
-  (emit "}") (newline)
+  (define (compile-def d)
+    (if (not (list? d)) (error (string-append "expected (define ...) got " (format "~a" d))) #f)
+    (if (not (equal? (car d) 'define)) (error (string-append "expected (define ...) got " (format "~a" d))) #f)
+    (let* [
+      (nameargs (list-ref d 1))
+      (body (list-ref d 2))
+      (name (car nameargs))
+      (args (cdr nameargs))
+      ]
+      (emit "define i32 @" name "(")
+      (if (null? args) #f
+        (let [
+          (a0 (car args))
+          (an (cdr args))
+          ]
+          (emit "i32 %" a0)
+          (map (lambda (a) (emit ", i32 %" a)) an)
+        )
+      )
+      (emit ") {") (newline)
+      (emit "entry:") (newline)
+
+      (push-scope-chain)
+      (map (lambda (a) (hash-set! (car scope-chain) a (make-varref (string-append "%" (symbol->string a))))) args)
+      (emit "  ret i32 " (compile-expr body)) (newline)
+      (pop-scope-chain)
+
+      (emit "}") (newline)
+    )
+  )
+  (map compile-def (cons def defs))
 )
 

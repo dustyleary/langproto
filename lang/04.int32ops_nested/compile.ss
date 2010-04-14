@@ -13,7 +13,7 @@
   (<< . "shl i32")
 ])
 
-(define (compile-program x)
+(define (compile-program x . xs)
   (define uniqid 0)
   (define (get-uniqid) (let ((v uniqid)) (set! uniqid (+ 1 uniqid)) (string-append "%x" (number->string v))))
 
