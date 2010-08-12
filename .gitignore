@@ -1,3 +1,4 @@
+*.pyc
 *.ll
 *.exe
 out
