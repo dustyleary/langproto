@@ -40,12 +40,12 @@ def parseFuncDef(s):
     assert s[0] == sexpr.sym('define')
 
     assert isinstance(s[1], list)
-    assert 1 == len(s[1])
     assert isinstance(s[1][0], sexpr.sym)
     name = s[1][0].txt
+    args = s[1][1:]
 
     body = parseItem(s[2])
-    return FunctionDefinition(name, [], body)
+    return FunctionDefinition(name, args, body)
 
 def parseFuncApply(s):
     assert isinstance(s, list)
@@ -78,7 +78,7 @@ def compileFuncDef(fd):
 
     def compileLiteral(l):
         return str(l.value)
-    def compileFunctionApplication(fa):
+    def compilePrimOp(fa):
         assert isinstance(fa.func, VariableReference)
         asm = PrimOp.primOpAsms[fa.func.name.txt]
         assert 2 == len(fa.args)
@@ -88,16 +88,30 @@ def compileFuncDef(fd):
         id = getUniqId()
         emitln("  %s = %s %s, %s" % (id, asm, ac, bc))
         return id
+    def compileFunctionApplication(fa):
+        assert isinstance(fa.func, VariableReference)
+        if fa.func.name.txt in PrimOp.primOpAsms:
+            return compilePrimOp(fa)
+        argids = [compileExpr(a) for a in fa.args]
+        argtxt = ",".join(["i32 %s" % id for id in argids])
+        id = getUniqId()
+        emitln("  %s = tail call i32 @%s(%s) nounwind" % (id, fa.func.name.txt, argtxt))
+        return id
+    def compileVariableReference(vr):
+        return "%" + vr.name.txt
 
     def compileExpr(expr):
         if isinstance(expr, Literal):
             return compileLiteral(expr)
         elif isinstance(expr, FunctionApplication):
             return compileFunctionApplication(expr)
+        elif isinstance(expr, VariableReference):
+            return compileVariableReference(expr)
         else:
             raise Exception("don't understand expr", expr)
 
-    emitln("define i32 @%s() nounwind readnone {" % fd.name)
+    argspecs = ",".join(["i32 %"+a.txt for a in fd.args])
+    emitln("define i32 @%s(%s) nounwind readnone {" % (fd.name, argspecs))
     emitln("entry:")
     emitln("  ret i32 "+compileExpr(fd.body))
     emitln("}")
