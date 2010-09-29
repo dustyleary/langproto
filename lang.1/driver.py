@@ -1,4 +1,4 @@
-import os
+import os.path
 import subprocess
 import sys
 
@@ -39,6 +39,11 @@ def runProgram(program):
     f.write(llvmPrelude)
     f.write(asm)
     f.close()
+    outName = 'out'
+    if sys.platform == 'win32':
+        outName += '.exe'
+    while os.path.exists(outName):
+        os.unlink(outName)
     myExec("llvmc driver.c out.ll -o out")
     if sys.platform == 'win32':
         return myExec("out")
