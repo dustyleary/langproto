@@ -7,7 +7,7 @@ import sexpr
 
 def myExec(cmdline):
     try:
-        p = subprocess.Popen(cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        p = subprocess.Popen(cmdline, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
         print '='*20
         print cmdline
