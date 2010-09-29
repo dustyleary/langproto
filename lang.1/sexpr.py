@@ -7,9 +7,11 @@ class sym(object):
         return "sym(%r)" % self.txt
     def __eq__(self, o):
         try:
-            return self.txt == o.txt
+            return isinstance(o, sym) and (self.txt == o.txt)
         except Exception:
             return False
+    def __ne__(self, o):
+        return not (self == o)
 
 def eat_whitespace(txt):
     i = 0

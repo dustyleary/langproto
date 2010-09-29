@@ -6,7 +6,12 @@ import compiler
 import sexpr
 
 def myExec(cmdline):
-    p = subprocess.Popen(cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        p = subprocess.Popen(cmdline, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception:
+        print '='*20
+        print cmdline
+        raise
     out,err = p.communicate()
     if p.returncode != 0:
         print '='*20

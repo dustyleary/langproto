@@ -5,6 +5,15 @@ import unittest
 class AtomTest(unittest.TestCase):
     def test_symbol(self):
         self.assertEqual(sym('asdf'), sexpr.parse1("asdf"))
+        self.assertNotEqual(sym('asdf'), sexpr.parse1("asdf1"))
+
+        self.assertTrue(sym('asdf') == sexpr.parse1("asdf"))
+        self.assertTrue(sym('asdf') == sym('asdf'))
+        self.assertTrue(sym('asdf') != sexpr.parse1("asdf1"))
+        self.assertTrue(sym('asdf') != sym('asdf1'))
+
+        self.assertTrue(sym('let') == sym('let'))
+        self.assertFalse(sym('let') != sym('let'))
 
     def test_int(self):
         self.assertEqual(123, sexpr.parse1("123"))
