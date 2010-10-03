@@ -28,14 +28,14 @@ builtins = dict(
 )
 globals().update(builtins)
 
-class FunctionCompileContext(object):
-    def __init__(self, module, funcdef):
-        self.functionText = ""
+class CompileContext(object):
+    def __init__(self):
+        self.text = ""
         self.uniqIds = set()
-        self.scopeChain = [module, builtins, funcdef]
+        self.scopeChain = [builtins]
 
     def emit(self, s):
-        self.functionText += s
+        self.text += s
 
     def emitln(self, s):
         self.emit(s+"\n")
@@ -68,11 +68,11 @@ class LlvmBinOp(object):
         self.name = name
         self.asm = asm
 
-    def compileApplication(self, fcc, args):
+    def compileApplication(self, cc, args):
         assert 2 == len(args)
-        argids = [a.compile(fcc) for a in args]
-        id = fcc.getUniqId()
-        fcc.emitln("  %s = %s %s, %s" % (id, self.asm, argids[0], argids[1]))
+        argids = [a.funcdefCompile(cc) for a in args]
+        id = cc.getUniqId()
+        cc.emitln("  %s = %s %s, %s" % (id, self.asm, argids[0], argids[1]))
         return id
 
 opinfo = {
@@ -124,7 +124,9 @@ class Literal(Expr):
     def __init__(self, value):
         self.value = value
 
-    def compile(self, fcc):
+    def funcdefCompile(self, cc):
+        return str(self.value)
+    def moduleCompile(self, cc):
         return str(self.value)
 
     @staticmethod
@@ -139,9 +141,9 @@ class FunctionApplication(Expr):
         self.func = func
         self.args = args
 
-    def compile(self, fcc):
-        f = fcc.resolveSymbol(self.func.name)
-        return f.compileApplication(fcc, self.args)
+    def funcdefCompile(self, cc):
+        f = cc.resolveSymbol(self.func.name)
+        return f.compileApplication(cc, self.args)
 
     @staticmethod
     def parse(s):
@@ -155,9 +157,9 @@ class VariableReference(Expr):
     def __init__(self, name):
         self.name = name
 
-    def compile(self, fcc):
-        target = fcc.resolveSymbol(self.name)
-        return target.compile(fcc)
+    def funcdefCompile(self, cc):
+        target = cc.resolveSymbol(self.name)
+        return target.funcdefCompile(cc)
 
     @staticmethod
     def parse(s):
@@ -170,19 +172,19 @@ class LetBinding(object):
         self.name = name
         self.expr = expr
 
-    def compile(self, fcc):
-        return self.expr.compile(fcc)
+    def funcdefCompile(self, cc):
+        return self.expr.funcdefCompile(cc)
 
 class Let(Expr):
     def __init__(self, bindings, body):
         self.bindings = bindings
         self.body = body
 
-    def compile(self, fcc):
+    def funcdefCompile(self, cc):
         for binding in self.bindings:
-            binding.vc = binding.expr.compile(fcc)
-        with fcc.pushScope(self):
-            return self.body.compile(fcc)
+            binding.vc = binding.expr.funcdefCompile(cc)
+        with cc.pushScope(self):
+            return self.body.funcdefCompile(cc)
 
     def __getitem__(self, k):
         for b in self.bindings:
@@ -219,6 +221,7 @@ class TopLevelItem(object):
     def __parse(s):
         types = [
             FunctionDefinition,
+            GlobalValue,
         ]
         for t in types:
             try:
@@ -236,12 +239,41 @@ class TopLevelItem(object):
         assert isinstance(result, TopLevelItem)
         return result
 
+class GlobalValue(TopLevelItem):
+    def __init__(self, name, expr):
+        self.name = name
+        self.expr = expr
+
+    def moduleCompile(self, cc):
+        ev = self.expr.moduleCompile(cc)
+        cc.emitln("@%s = global i32 %s" % (self.name, ev))
+        return cc.text
+
+    def funcdefCompile(self, cc):
+        id = cc.getUniqId()
+        cc.emitln("%s = load i32* @%s" % (id, self.name))
+        return id
+
+    @staticmethod
+    def parse(s):
+        if not isinstance(s, list):
+            raise ParseException
+        if s[0] != sexpr.sym('define'):
+            raise ParseException
+
+        if not isinstance(s[1], sexpr.sym):
+            raise ParseException
+
+        name = s[1].txt
+        expr = Expr.parse(s[2])
+        return GlobalValue(name, expr)
+
 class FunctionDefinition(TopLevelItem):
     class FuncArgRef(object):
         def __init__(self, name):
             self.name = name
 
-        def compile(self, fcc):
+        def funcdefCompile(self, cc):
             return "%" + self.name
 
     def __init__(self, name, args, body):
@@ -249,23 +281,20 @@ class FunctionDefinition(TopLevelItem):
         self.args = args
         self.body = body
 
-    def compileApplication(self, fcc, args):
-        argids = [a.compile(fcc) for a in args]
+    def compileApplication(self, cc, args):
+        argids = [a.funcdefCompile(cc) for a in args]
         argtxt = ",".join(["i32 %s" % id for id in argids])
-        id = fcc.getUniqId()
-        fcc.emitln("  %s = tail call i32 @%s(%s) nounwind" % (id, self.name, argtxt))
+        id = cc.getUniqId()
+        cc.emitln("  %s = tail call i32 @%s(%s) nounwind" % (id, self.name, argtxt))
         return id
 
-    def compile(self, module):
-        fcc = FunctionCompileContext(module, self)
-
-        argspecs = ",".join(["i32 %"+a for a in self.args])
-        fcc.emitln("define i32 @%s(%s) nounwind readnone {" % (self.name, argspecs))
-        fcc.emitln("entry:")
-        fcc.emitln("  ret i32 "+self.body.compile(fcc))
-        fcc.emitln("}")
-
-        return fcc.functionText
+    def moduleCompile(self, cc):
+        with cc.pushScope(self):
+            argspecs = ",".join(["i32 %"+a for a in self.args])
+            cc.emitln("define i32 @%s(%s) nounwind readnone {" % (self.name, argspecs))
+            cc.emitln("entry:")
+            cc.emitln("  ret i32 "+self.body.funcdefCompile(cc))
+            cc.emitln("}")
 
     def __getitem__(self, k):
         for a in self.args:
@@ -307,10 +336,11 @@ class Module(object):
             self.funcs[fd.name] = fd
 
     def compile(self):
-        result = ''
-        for fd in self.funcs.values():
-            result += fd.compile(self)
-        return result
+        cc = CompileContext()
+        with cc.pushScope(self):
+            for fd in self.funcs.values():
+                fd.moduleCompile(cc)
+        return cc.text
 
     def __getitem__(self, k):
         return self.funcs[k]
