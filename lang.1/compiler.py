@@ -128,9 +128,12 @@ widths = [8,16,32,64]
 for opname in opinfo:
     opasm = opinfo[opname]
     for w in widths:
-        fullopname = opname+'u'+str(w)
-        op = LlvmBinOp(fullopname, opasm + " i"+str(w))
-        builtins[fullopname] = op
+        fullopname_u = opname+'u'+str(w)
+        fullopname_s = opname+'s'+str(w)
+        op = LlvmBinOp(fullopname_u, opasm + " i"+str(w))
+        builtins[fullopname_u] = op
+        op = LlvmBinOp(fullopname_s, opasm + " i"+str(w))
+        builtins[fullopname_s] = op
         if w == 32:
             builtins[opname] = op
 
