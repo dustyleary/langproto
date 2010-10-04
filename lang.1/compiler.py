@@ -6,7 +6,7 @@ class Type(object):
     def __init__(self, name):
         self.name = name
     def __repr__(self):
-        return "<Type %r>" % self.name
+        return "<%s %r>" % (type(self), self.name)
 
 class IntType(Type):
     def __init__(self, signed, width):
@@ -14,6 +14,10 @@ class IntType(Type):
         self.width = width
         name = ('s' if signed else 'u') + str(width)
         Type.__init__(self, name)
+
+    @property
+    def llvmType(self):
+        return 'i%d' % self.width
 
 builtins = dict(
     void = Type('void'),
@@ -33,12 +37,19 @@ class CompileContext(object):
         self.text = ""
         self.uniqIds = set()
         self.scopeChain = [builtins]
+        self.indentLevel = 0
 
-    def emit(self, s):
-        self.text += s
+    @contextmanager
+    def indent(self):
+        try:
+            self.indentLevel += 1
+            yield
+        finally:
+            self.indentLevel -= 1
 
     def emitln(self, s):
-        self.emit(s+"\n")
+        line = self.indentLevel*"  " + s + "\n"
+        self.text += line
 
     def getUniqId(self):
         for i in xrange(1000):
@@ -63,6 +74,31 @@ class CompileContext(object):
         finally:
             self.scopeChain.pop(0)
 
+class NameAndTypeDecl(object):
+    DEFAULT = object()
+    def __init__(self, name, declaredType):
+        self.name = name
+        self.declaredType = declaredType
+
+    def __repr__(self):
+        dt = 'DEFAULT' if self.isDefault else repr(self.declaredType)
+        return "<NameAndTypeDecl %r %s>" % (self.name, dt)
+
+    @property
+    def isDefault(self):
+        return self.declaredType is self.DEFAULT
+
+    @staticmethod
+    def parse(s):
+        if isinstance(s, sexpr.sym):
+            return NameAndTypeDecl(s.txt, NameAndTypeDecl.DEFAULT)
+        elif isinstance(s, list):
+            if len(s) == 3:
+                if s[0] == sexpr.sym(':'):
+                    if isinstance(s[1], sexpr.sym):
+                        return NameAndTypeDecl(s[1].txt, Expr.parse(s[2]))
+        raise ParseException, s
+
 class LlvmBinOp(object):
     def __init__(self, name, asm):
         self.name = name
@@ -72,7 +108,7 @@ class LlvmBinOp(object):
         assert 2 == len(args)
         argids = [a.funcdefCompile(cc) for a in args]
         id = cc.getUniqId()
-        cc.emitln("  %s = %s %s, %s" % (id, self.asm, argids[0], argids[1]))
+        cc.emitln("%s = %s %s, %s" % (id, self.asm, argids[0], argids[1]))
         return id
 
 opinfo = {
@@ -88,10 +124,15 @@ opinfo = {
     '<<': 'shl',
 }
 
-for oname in opinfo:
-    oasm = opinfo[oname]
-    op32 = LlvmBinOp(oname, oasm + " i32")
-    builtins[oname] = op32
+widths = [8,16,32,64]
+for opname in opinfo:
+    opasm = opinfo[opname]
+    for w in widths:
+        fullopname = opname+'u'+str(w)
+        op = LlvmBinOp(fullopname, opasm + " i"+str(w))
+        builtins[fullopname] = op
+        if w == 32:
+            builtins[opname] = op
 
 class ParseException(Exception): pass
 
@@ -168,12 +209,16 @@ class VariableReference(Expr):
         return VariableReference(s)
 
 class LetBinding(object):
-    def __init__(self, name, expr):
-        self.name = name
+    def __init__(self, nameAndType, expr):
+        self.nameAndType = nameAndType
         self.expr = expr
 
     def funcdefCompile(self, cc):
         return self.expr.funcdefCompile(cc)
+
+    @property
+    def name(self):
+        return self.nameAndType.name
 
 class Let(Expr):
     def __init__(self, bindings, body):
@@ -207,11 +252,9 @@ class Let(Expr):
         for binding in s[1]:
             if not isinstance(binding, list) or 2!=len(binding):
                 raise ParseException, "not a valid let binding: %r" % binding
-            if not isinstance(binding[0], sexpr.sym):
-                raise ParseException, "not a valid let binding: %r" % binding
-            name = binding[0].txt
+            nameAndType = NameAndTypeDecl.parse(binding[0])
             expr = Expr.parse(binding[1])
-            bindings.append(LetBinding(name, expr))
+            bindings.append(LetBinding(nameAndType, expr))
 
         body = Expr.parse(s[2])
         return Let(bindings, body)
@@ -220,8 +263,8 @@ class TopLevelItem(object):
     @staticmethod
     def __parse(s):
         types = [
-            FunctionDefinition,
             GlobalValue,
+            FunctionDefinition,
         ]
         for t in types:
             try:
@@ -240,18 +283,35 @@ class TopLevelItem(object):
         return result
 
 class GlobalValue(TopLevelItem):
-    def __init__(self, name, expr):
-        self.name = name
+    def __init__(self, nameAndType, expr):
+        self.nameAndType = nameAndType
         self.expr = expr
+
+    @property
+    def name(self):
+        return self.nameAndType.name
+
+    @property
+    def typeName(self):
+        if self.nameAndType.isDefault:
+            return sexpr.sym('s32')
+        else:
+            return self.nameAndType.declaredType.name
+
+    @property
+    def llvmType(self):
+        cc = CompileContext()
+        rt = cc.resolveSymbol(self.typeName)
+        return rt.llvmType
 
     def moduleCompile(self, cc):
         ev = self.expr.moduleCompile(cc)
-        cc.emitln("@%s = global i32 %s" % (self.name, ev))
+        cc.emitln("@%s = global %s %s" % (self.name, self.llvmType, ev))
         return cc.text
 
     def funcdefCompile(self, cc):
         id = cc.getUniqId()
-        cc.emitln("%s = load i32* @%s" % (id, self.name))
+        cc.emitln("%s = load %s* @%s" % (id, self.llvmType, self.name))
         return id
 
     @staticmethod
@@ -261,45 +321,74 @@ class GlobalValue(TopLevelItem):
         if s[0] != sexpr.sym('define'):
             raise ParseException
 
-        if not isinstance(s[1], sexpr.sym):
-            raise ParseException
-
-        name = s[1].txt
+        nameAndType = NameAndTypeDecl.parse(s[1])
         expr = Expr.parse(s[2])
-        return GlobalValue(name, expr)
+        return GlobalValue(nameAndType, expr)
 
 class FunctionDefinition(TopLevelItem):
-    class FuncArgRef(object):
-        def __init__(self, name):
-            self.name = name
+    class FuncArg(object):
+        def __init__(self, nameAndType):
+            self.nameAndType = nameAndType
 
         def funcdefCompile(self, cc):
             return "%" + self.name
 
-    def __init__(self, name, args, body):
-        self.name = name
+        @property
+        def name(self):
+            return self.nameAndType.name
+
+        @property
+        def llvmType(self):
+            cc = CompileContext()
+            tn = sexpr.sym('s32') if self.nameAndType.isDefault else self.nameAndType.declaredType.name
+            t = cc.resolveSymbol(tn)
+            return t.llvmType
+
+    def __init__(self, nameAndType, args, body):
+        self.nameAndType = nameAndType
         self.args = args
         self.body = body
 
+    @property
+    def name(self):
+        return self.nameAndType.name
+
+    @property
+    def returnTypeName(self):
+        if self.nameAndType.isDefault:
+            return sexpr.sym('s32')
+        else:
+            return self.nameAndType.declaredType.name
+
+    @property
+    def llvmReturnType(self):
+        cc = CompileContext()
+        rt = cc.resolveSymbol(self.returnTypeName)
+        return rt.llvmType
+
     def compileApplication(self, cc, args):
         argids = [a.funcdefCompile(cc) for a in args]
-        argtxt = ",".join(["i32 %s" % id for id in argids])
+        argtxt = ", ".join(["%s %s" % (a.llvmType, id) for a,id in zip(self.args, argids)])
         id = cc.getUniqId()
-        cc.emitln("  %s = tail call i32 @%s(%s) nounwind" % (id, self.name, argtxt))
+        cc.emitln("%s = call %s @%s(%s) nounwind" % (id, self.llvmReturnType, self.name, argtxt))
         return id
 
     def moduleCompile(self, cc):
         with cc.pushScope(self):
-            argspecs = ",".join(["i32 %"+a for a in self.args])
-            cc.emitln("define i32 @%s(%s) nounwind readnone {" % (self.name, argspecs))
+            def argspec(a):
+                return "%s %%%s" % (a.llvmType, a.name)
+
+            argspecs = ", ".join([argspec(a) for a in self.args])
+            cc.emitln("define %s @%s(%s) nounwind readnone {" % (self.llvmReturnType, self.name, argspecs))
             cc.emitln("entry:")
-            cc.emitln("  ret i32 "+self.body.funcdefCompile(cc))
+            with cc.indent():
+                cc.emitln("ret %s %s" % (self.llvmReturnType, self.body.funcdefCompile(cc)))
             cc.emitln("}")
 
     def __getitem__(self, k):
-        for a in self.args:
-            if a==k:
-                return self.FuncArgRef(a)
+        for fa in self.args:
+            if fa.name==k:
+                return fa
         else:
             raise KeyError(k)
 
@@ -312,38 +401,34 @@ class FunctionDefinition(TopLevelItem):
 
         if not isinstance(s[1], list):
             raise ParseException
-        if not isinstance(s[1][0], sexpr.sym):
-            raise ParseException
-
-        name = s[1][0].txt
+        nameAndType = NameAndTypeDecl.parse(s[1][0])
 
         args = []
         for a in s[1][1:]:
-            if not isinstance(a, sexpr.sym):
-                raise ParseException
-            args.append(a.txt)
+            fa = FunctionDefinition.FuncArg(NameAndTypeDecl.parse(a))
+            args.append(fa)
 
         body = Expr.parse(s[2])
-        return FunctionDefinition(name, args, body)
+        return FunctionDefinition(nameAndType, args, body)
 
 class Module(object):
     def __init__(self):
-        self.funcs = {}
+        self.entries = {}
 
     def parse(self, sexprs):
         for s in sexprs:
-            fd = TopLevelItem.parse(s)
-            self.funcs[fd.name] = fd
+            i = TopLevelItem.parse(s)
+            self.entries[i.name] = i
 
     def compile(self):
         cc = CompileContext()
         with cc.pushScope(self):
-            for fd in self.funcs.values():
+            for fd in self.entries.values():
                 fd.moduleCompile(cc)
         return cc.text
 
     def __getitem__(self, k):
-        return self.funcs[k]
+        return self.entries[k]
 
 def compile(sexprs):
     m = Module()
