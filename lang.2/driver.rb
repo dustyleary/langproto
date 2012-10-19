@@ -113,7 +113,7 @@ class ModuleCompiler
     def compilePrimOpApplication expr
         funName = expr[0].to_s
         info = funName.split ':'
-        bad = Proc.new { raise NameError, "function #{funName} not defined" }
+        bad = Proc.new { raise NameError, "function '#{funName}' not defined" }
         bad.call if info.length < 2
         bad.call unless IntTypes.include? info[0]
         bad.call unless IntBinOps.include? info[1]
