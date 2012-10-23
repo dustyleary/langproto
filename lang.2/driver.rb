@@ -1,5 +1,6 @@
 require 'open3'
 require 'tempfile'
+require 'sexpr'
 
 class FunType
   attr_reader :retType, :argTypes
@@ -95,7 +96,7 @@ class ModuleCompiler
       @name = name
       @argTypes = {}
       @args = args
-      @args.each { |n,t| @argTypes[n.to_s] = t }
+      @args.each { |n,t| @argTypes[n.to_s] = t.to_s }
       @type = type
       @body = []
       @nameIdx = Hash.new 0
@@ -154,7 +155,7 @@ class ModuleCompiler
         n = localName 'if.result'
         type = result_then[0]
         if type != result_else[0]
-          raise ArgumentError, "if expression requires both branches to have the same type"
+          raise ArgumentError, "if expression requires both branches to have the same type #{type.inspect} != #{result_else[0].inspect}"
         end
         bodyLine "#{n} = phi #{type} [ #{result_then[1]},#{label_then} ], [ #{result_else[1]},#{label_else}]"
 
@@ -230,11 +231,17 @@ class ModuleCompiler
 end
 
 def test_compile_expr result, body
+  if body.instance_of? String
+    body = Sexpr.read1 body
+  end
   mc = ModuleCompiler.new
   test_compile result, [[:define, [:main, [], 'i32'], body]]
 end
 
 def test_compile result, program
+  if program.instance_of? String
+    program = Sexpr.read program
+  end
   mc = ModuleCompiler.new
   program.each { |tldef|
     raise ArgumentError, "can't handle toplevel #{tldef.inspect}" unless tldef[0] == :define
