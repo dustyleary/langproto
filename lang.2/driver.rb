@@ -15,6 +15,7 @@ end
 
 IntTypes = %q[i1 i8 i16 i32]
 IntBinOps = %q[add sub mul udiv sdiv urem srem shl lshr ashr and or xor]
+IntCmpOps = %q[eq ne ugt uge ult ule sgt sge slt sle]
 
 class ModuleCompiler
   attr_reader :primOps, :funTypes
@@ -97,37 +98,104 @@ class ModuleCompiler
       @args.each { |n,t| @argTypes[n.to_s] = t }
       @type = type
       @body = []
-      @call_index = 0
+      @nameIdx = Hash.new 0
+    end
+
+    def bodyLine line
+      @body << '  '+line
+    end
+    def labelLine line
+      @body << line
+    end
+
+    def localName base
+      n = "%#{base}.#{@nameIdx[base]}"
+      @nameIdx[base] += 1
+      return n
     end
 
     def compileFunctionApplication expr
         funName = expr[0].to_s
         funType = @moduleCompiler.getFunType funName
         args = expr[1..-1].map { |e| compile_expr e }
-        n = "%.call.#{@call_index}"
-        @call_index += 1
-        @body << "#{n} = call #{funType.to_s}* @#{funName}(#{args.map{|a| a.join ' '}.join ','})"
+        n = localName "call"
+        bodyLine "#{n} = call #{funType.to_s}* @#{funName}(#{args.map{|a| a.join ' '}.join ','})"
         return [funType.retType, n]
+    end
+
+    def badfunc funName
+      raise NameError, "function '#{funName}' not defined"
+    end
+
+    def compileIfApplication expr
+        funName = expr[0].to_s
+        badfunc(funName) unless funName == 'if'
+
+        if expr.length != 4
+          raise ArgumentError, "if expression requires 3 args"
+        end
+
+        test = compile_expr expr[1]
+        label_then = localName 'if.then'
+        label_else = localName 'if.else'
+        label_end = localName 'if.end'
+
+        bodyLine "br i1 #{test[1]}, label #{label_then}, label #{label_else}"
+
+        labelLine label_then[1..-1] + ':'
+        result_then = compile_expr expr[2]
+        bodyLine "br label #{label_end}"
+
+        labelLine label_else[1..-1] + ':'
+        result_else = compile_expr expr[3]
+        bodyLine "br label #{label_end}"
+
+        labelLine label_end[1..-1] + ':'
+        n = localName 'if.result'
+        type = result_then[0]
+        if type != result_else[0]
+          raise ArgumentError, "if expression requires both branches to have the same type"
+        end
+        bodyLine "#{n} = phi #{type} [ #{result_then[1]},#{label_then} ], [ #{result_else[1]},#{label_else}]"
+
+        return [type, n]
     end
 
     def compilePrimOpApplication expr
         funName = expr[0].to_s
         info = funName.split ':'
-        bad = Proc.new { raise NameError, "function '#{funName}' not defined" }
-        bad.call if info.length < 2
-        bad.call unless IntTypes.include? info[0]
-        bad.call unless IntBinOps.include? info[1]
+        badfunc(funName) if info.length < 2
+        badfunc(funName) unless IntTypes.include? info[0]
+        badfunc(funName) unless IntBinOps.include? info[1] or IntCmpOps.include? info[1]
 
-        type = info[0]
+        if IntBinOps.include? info[1]
+          type = info[0]
+          opname = info[1]
+        else
+          type = 'i1'
+          opname = "icmp #{info[1]}"
+        end
 
         args = expr[1..-1].map { |e| compile_expr e }
 
-        n = "%.call.#{@call_index}"
-        @call_index += 1
+        n = localName info[1]
 
-        @body << "#{n} = #{info[1]} #{info[0]} #{args.map{|a| a[1]}.join ','}"
+        bodyLine "#{n} = #{opname} #{info[0]} #{args.map{|a| a[1]}.join ','}"
 
         return [type, n]
+    end
+
+    def compileSpecialForm expr
+      if expr.length == 0
+        raise ArgumentError, "unhandled expr: #{expr.inspect}"
+      end
+
+      if expr[0].to_s == 'if'
+        return compileIfApplication expr
+      else
+        return compilePrimOpApplication expr
+      end
+
     end
 
     def compile_expr expr
@@ -142,7 +210,7 @@ class ModuleCompiler
         if @moduleCompiler.funTypes[funName]
           return compileFunctionApplication expr
         else
-          return compilePrimOpApplication expr
+          return compileSpecialForm expr
         end
       end
 
@@ -152,9 +220,9 @@ class ModuleCompiler
     def compile body
       result = nil
       body.each { | expr| result = compile_expr expr }
-      @body << "ret #{result.join ' '}"
+      bodyLine "ret #{result.join ' '}"
       funtext = "define #{@type.retType.to_s} @#{@name}(#{@args.map{|n,t| "#{t} %#{n}"}.join ','}) nounwind uwtable ssp {\n"
-      funtext += @body.map {|line| "  #{line}"}.join "\n"
+      funtext += @body.join "\n"
       funtext += "\n}"
       @moduleCompiler.add_definition funtext
     end
@@ -209,6 +277,8 @@ def test_compile result, program
   p got_result
   if got_result != result
     raise ArgumentError, "expected #{result.inspect}, got #{got_result.inspect}"
+  else
+    puts 'OK'
   end
 end
 
