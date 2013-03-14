@@ -71,6 +71,13 @@ class ModuleCompiler
     return @funTypes[funName]
   end
 
+  def getType typeName
+    if IntTypes.include? typeName
+      return IntTypes[typeName]
+    end
+    raise ArgumentError, "can't find type '#{typeName}'"
+  end
+
   def global_string str
     return @global_strings[str] if @global_strings[str]
 
@@ -100,6 +107,7 @@ class ModuleCompiler
       @type = type
       @body = []
       @nameIdx = Hash.new 0
+      @localVarTypes = {}
     end
 
     def bodyLine line
@@ -186,6 +194,51 @@ class ModuleCompiler
         return [type, n]
     end
 
+    def compileLocalVariableAllocation expr
+        funName = expr[0].to_s
+        badfunc(funName) unless funName == 'var'
+
+        if expr.length != 3
+          raise ArgumentError, "var statement requires 2 args"
+        end
+
+        if expr[1].class != Symbol
+          raise ArgumentError, "var statement requires symbol as first arg, got: "+expr[1]
+        end
+
+        varName = expr[1]
+        varType = expr[2]
+        @localVarTypes[varName.to_s] = varType
+        # TODO: align
+        bodyLine "%#{expr[1]} = alloca #{expr[2]}"
+    end
+
+    def compileLocalVarLookup expr
+        if expr.class != Symbol
+          raise ArgumentError, "var lookup needs Symbol, got #{expr}"
+        end
+        n = localName expr.to_s
+        bodyLine "#{n} = load #{@localVarTypes[expr.to_s]}* %#{expr.to_s}"
+        return [@localVarTypes[expr.to_s], n]
+    end
+
+    def compileSetBang expr
+        funName = expr[0].to_s
+        badfunc(funName) unless funName == 'set!'
+
+        if expr.length != 3
+          raise ArgumentError, "var statement requires 2 args"
+        end
+
+        if expr[1].class != Symbol
+          raise ArgumentError, "var statement requires symbol as first arg, got: "+expr[1]
+        end
+
+        value = compile_expr expr[2]
+        # TODO: align
+        bodyLine "store #{value[0]} #{value[1]}, #{@localVarTypes[expr[1].to_s]}* %#{expr[1].to_s}"
+    end
+
     def compileSpecialForm expr
       if expr.length == 0
         raise ArgumentError, "unhandled expr: #{expr.inspect}"
@@ -193,6 +246,10 @@ class ModuleCompiler
 
       if expr[0].to_s == 'if'
         return compileIfApplication expr
+      elsif expr[0].to_s == 'var'
+        return compileLocalVariableAllocation expr
+      elsif expr[0].to_s == 'set!'
+        return compileSetBang expr
       else
         return compilePrimOpApplication expr
       end
@@ -203,7 +260,13 @@ class ModuleCompiler
       if expr.class == Fixnum
         return ["i32", expr]
       elsif expr.class == Symbol
-        return [@argTypes[expr.to_s], '%'+expr.to_s]
+        if @argTypes[expr.to_s]
+          return [@argTypes[expr.to_s], '%'+expr.to_s]
+        elsif @localVarTypes[expr.to_s]
+          return compileLocalVarLookup expr
+        else
+          raise NameError, "can't resolve symbol: #{expr.to_s}"
+        end
       elsif expr.class == String
         return @moduleCompiler.global_string expr
       elsif expr.class == Array
