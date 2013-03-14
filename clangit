@@ -1,2 +1,2 @@
-exec clang -x c - -S -emit-llvm -O3 -o -
+exec clang -x c - -S -emit-llvm -O0 -o -
 
