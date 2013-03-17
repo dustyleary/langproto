@@ -84,10 +84,11 @@ class ModuleCompiler
 
   def compile_function tldef
     raise ArgumentError, "expected [:define ...], got #{tldef.inspect}" unless tldef[0] == :define
-    raise ArgumentError, "expected [:define [:sym args] body], got #{tldef.inspect}" unless tldef[1][0].class == Symbol
+    raise ArgumentError, "expected [:define [:sym args retType] body], got #{tldef.inspect}" unless tldef[1][0].class == Symbol
     funName = tldef[1][0]
     funArgs = tldef[1][1]
-    funType = FunType.new tldef[1][2], funArgs.map { |n,t| t }
+    retType = getType tldef[1][2]
+    funType = FunType.new retType, funArgs.map { |n,t| t }
     addFunType funName, funType
     body = tldef[2..-1]
     FunctionCompiler.new(self, funName, funType, funArgs).compile body
@@ -105,8 +106,9 @@ class ModuleCompiler
       fieldType = getType fieldDef[1]
       [fieldName, fieldType]
     }
-    @structTypes[structName.to_s] = StructType.new structName, fields
-    add_structdef "%struct.#{structName} = type #{@structTypes[structName.to_s].getLlvmFullTypeStr}"
+    structType = StructType.new structName, fields
+    @structTypes[structName.to_s] = structType
+    add_structdef "%struct.#{structName} = type #{structType.getLlvmFullTypeStr}"
   end
 
   def compile_module tldefs
@@ -158,6 +160,9 @@ class ModuleCompiler
     if @structTypes.include? typeName.to_s
       return @structTypes[typeName.to_s]
     end
+    if typeName.to_s.end_with? '*'
+      return PointerType.new getType(typeName.to_s[0...-1])
+    end
     raise ArgumentError, "can't find type '#{typeName}'"
   end
 
@@ -201,18 +206,19 @@ class ModuleCompiler
     end
 
     def localName base
+      base = base[1..-1] while base[0...1] == '%'
       n = "%#{base}.#{@nameIdx[base]}"
       @nameIdx[base] += 1
       return n
     end
 
     def compileFunctionApplication expr
-        funName = expr[0].to_s
-        funType = @moduleCompiler.getFunType funName
-        args = expr[1..-1].map { |e| compile_expr e }
-        n = localName "call"
-        bodyLine "#{n} = call #{funType.to_s}* @#{funName}(#{args.map{|a| a.join ' '}.join ','})"
-        return [funType.retType, n]
+      funName = expr[0].to_s
+      funType = @moduleCompiler.getFunType funName
+      args = expr[1..-1].map { |e| compile_expr e }
+      n = localName "call"
+      bodyLine "#{n} = call #{funType.to_s}* @#{funName}(#{args.map{|a| a.join ' '}.join ','})"
+      return [funType.retType, n]
     end
 
     def badfunc funName
@@ -220,139 +226,145 @@ class ModuleCompiler
     end
 
     def compileIfApplication expr
-        funName = expr[0].to_s
-        badfunc(funName) unless funName == 'if'
+      funName = expr[0].to_s
+      badfunc(funName) unless funName == 'if'
 
-        if expr.length != 4
-          raise ArgumentError, "if expression requires 3 args"
-        end
+      if expr.length != 4
+        raise ArgumentError, "if expression requires 3 args"
+      end
 
-        test = compile_expr expr[1]
-        label_then = localName 'if.then'
-        label_else = localName 'if.else'
-        label_end = localName 'if.end'
+      test = compile_expr expr[1]
+      label_then = localName 'if.then'
+      label_else = localName 'if.else'
+      label_end = localName 'if.end'
 
-        bodyLine "br i1 #{test[1]}, label #{label_then}, label #{label_else}"
+      bodyLine "br i1 #{test[1]}, label #{label_then}, label #{label_else}"
 
-        labelLine label_then[1..-1] + ':'
-        result_then = compile_expr expr[2]
-        bodyLine "br label #{label_end}"
+      labelLine label_then[1..-1] + ':'
+      result_then = compile_expr expr[2]
+      bodyLine "br label #{label_end}"
 
-        labelLine label_else[1..-1] + ':'
-        result_else = compile_expr expr[3]
-        bodyLine "br label #{label_end}"
+      labelLine label_else[1..-1] + ':'
+      result_else = compile_expr expr[3]
+      bodyLine "br label #{label_end}"
 
-        labelLine label_end[1..-1] + ':'
-        n = localName 'if.result'
-        type = result_then[0]
-        if type != result_else[0]
-          raise ArgumentError, "if expression requires both branches to have the same type #{type.inspect} != #{result_else[0].inspect}"
-        end
-        bodyLine "#{n} = phi #{type} [ #{result_then[1]},#{label_then} ], [ #{result_else[1]},#{label_else}]"
+      labelLine label_end[1..-1] + ':'
+      n = localName 'if.result'
+      type = result_then[0]
+      if type != result_else[0]
+        raise ArgumentError, "if expression requires both branches to have the same type #{type.inspect} != #{result_else[0].inspect}"
+      end
+      bodyLine "#{n} = phi #{type} [ #{result_then[1]},#{label_then} ], [ #{result_else[1]},#{label_else}]"
 
-        return [type, n]
+      return [type, n]
     end
 
     def compilePrimOpApplication expr
-        funName = expr[0].to_s
-        info = funName.split ':'
-        badfunc(funName) if info.length < 2
-        badfunc(funName) unless @moduleCompiler.getType(info[0].to_s).isIntType?
-        badfunc(funName) unless IntBinOps.include? info[1] or IntCmpOps.include? info[1]
+      funName = expr[0].to_s
+      info = funName.split ':'
+      badfunc(funName) if info.length < 2
+      badfunc(funName) unless @moduleCompiler.getType(info[0].to_s).isIntType?
+      badfunc(funName) unless IntBinOps.include? info[1] or IntCmpOps.include? info[1]
 
-        if IntBinOps.include? info[1]
-          type = info[0]
-          opname = info[1]
-        else
-          type = 'i1'
-          opname = "icmp #{info[1]}"
-        end
+      if IntBinOps.include? info[1]
+        type = info[0]
+        opname = info[1]
+      else
+        type = 'i1'
+        opname = "icmp #{info[1]}"
+      end
 
-        args = expr[1..-1].map { |e| compile_expr e }
+      args = expr[1..-1].map { |e| compile_expr e }
 
-        n = localName info[1]
+      n = localName info[1]
 
-        bodyLine "#{n} = #{opname} #{info[0]} #{args.map{|a| a[1]}.join ','}"
+      bodyLine "#{n} = #{opname} #{info[0]} #{args.map{|a| a[1]}.join ','}"
 
-        return [type, n]
+      return [type, n]
     end
 
     def compileLocalVariableAllocation expr
-        funName = expr[0].to_s
-        badfunc(funName) unless funName == 'var'
+      funName = expr[0].to_s
+      badfunc(funName) unless funName == 'var'
 
-        if expr.length != 3
-          raise ArgumentError, "var statement requires 2 args"
-        end
+      if expr.length != 3
+        raise ArgumentError, "var statement requires 2 args"
+      end
 
-        if expr[1].class != Symbol
-          raise ArgumentError, "var statement requires symbol as first arg, got: "+expr[1]
-        end
+      if expr[1].class != Symbol
+        raise ArgumentError, "var statement requires symbol as first arg, got: "+expr[1]
+      end
 
-        varName = expr[1]
-        varType = @moduleCompiler.getType expr[2]
-        @localVarTypes[varName.to_s] = varType
-        # TODO: align
-        bodyLine "%#{expr[1]} = alloca #{varType}"
+      varName = expr[1]
+      varType = @moduleCompiler.getType expr[2]
+      @localVarTypes[varName.to_s] = PointerType.new varType
+      # TODO: align
+      bodyLine "%#{expr[1]} = alloca #{varType}"
     end
 
     def compileLocalVarLookup expr
-        if expr.class != Symbol
-          raise ArgumentError, "var lookup needs Symbol, got #{expr}"
-        end
-        t = @localVarTypes[expr.to_s]
-        if t.isAlwaysPointedTo?
-          return [@localVarTypes[expr.to_s], expr.to_s]
-        else
-          n = localName expr.to_s
-          bodyLine "#{n} = load #{@localVarTypes[expr.to_s]}* %#{expr.to_s}"
-          return [@localVarTypes[expr.to_s], n]
-        end
+      raise ArgumentError, "expected Symbol, got #{expr}" unless expr.is_a? Symbol
+      raise ArgumentError, "not a local variable: #{expr}" unless @localVarTypes[expr.to_s]
+      [@localVarTypes[expr.to_s], "%#{expr.to_s}"]
     end
 
     def compileSetBang expr
-        funName = expr[0].to_s
-        badfunc(funName) unless funName == 'set!'
+      if expr.length != 3
+        raise ArgumentError, "set! statement requires 2 args"
+      end
 
-        if expr.length != 3
-          raise ArgumentError, "var statement requires 2 args"
-        end
+      address = compile_expr expr[1]
 
-        if expr[1].class != Symbol
-          raise ArgumentError, "var statement requires symbol as first arg, got: "+expr[1]
-        end
-
-        value = compile_expr expr[2]
-        # TODO: align
-        bodyLine "store #{value[0]} #{value[1]}, #{@localVarTypes[expr[1].to_s]}* %#{expr[1].to_s}"
+      value = compile_expr expr[2]
+      # TODO: align
+      bodyLine "store #{value[0]} #{value[1]}, #{address[0]} #{address[1].to_s}"
     end
 
-    def compileStructFieldPtr structExpr, fieldName
-        structType = structExpr[0]
-        raise ArgumentError, "expected StructType, got: #{structType}" unless structType.is_a? StructType
-        raise ArgumentError, "expected Symbol, got: #{fieldName}" unless fieldName.is_a? Symbol
+    def compileGet expr
+      if expr.length != 2
+        raise ArgumentError, "get statement requires 1 arg"
+      end
+      subExpr = compile_expr expr[1]
+      n = localName expr.to_s
+      bodyLine "#{n} = load #{subExpr[0]} #{subExpr[1].to_s}"
+      return [subExpr[0].pointeeType, n]
+    end
 
-        n = localName fieldName.to_s+'.ptr'
-        fieldIndex = structType.getFieldIndex fieldName
-        bodyLine "#{n} = getelementptr inbounds #{structType}* %#{structExpr[1]}, i32 0, i32 #{fieldIndex}"
-        [PointerType.new(structType.fields[fieldIndex][1]), n]
+    def compileStructFieldPtr expr
+      if expr.length != 3
+        raise ArgumentError, "struct-field statement requires 2 args"
+      end
+
+      structExpr = compile_expr expr[1]
+      fieldName = expr[2]
+
+      raise ArgumentError, "expected pointer-to-StructType, got: #{structExpr}" unless (structExpr[0].is_a?(PointerType) and structExpr[0].pointeeType.is_a?(StructType))
+      raise ArgumentError, "expected Symbol, got: #{fieldName}" unless fieldName.is_a? Symbol
+
+      structPtrType = structExpr[0]
+      structType = structPtrType.pointeeType
+      fieldIndex = structType.getFieldIndex fieldName
+
+      n = localName fieldName.to_s+'.ptr'
+      bodyLine "#{n} = getelementptr inbounds #{structExpr[0]} #{structExpr[1]}, i32 0, i32 #{fieldIndex}"
+      [PointerType.new(structType.fields[fieldIndex][1]), n]
     end
 
     def compileStructSetBang expr
-        structExpr = compile_expr expr[1]
-        fieldPtr = compileStructFieldPtr structExpr, expr[2]
-        value = compile_expr expr[3]
+      structExpr = compile_expr expr[1]
+      fieldPtr = compileStructFieldPtr structExpr, expr[2]
+      value = compile_expr expr[3]
 
-        bodyLine "store #{value[0]} #{value[1]}, #{fieldPtr[0]} #{fieldPtr[1].to_s}"
+      bodyLine "store #{value[0]} #{value[1]}, #{fieldPtr[0]} #{fieldPtr[1].to_s}"
     end
 
     def compileStructGet expr
-        structExpr = compile_expr expr[1]
-        fieldPtr = compileStructFieldPtr structExpr, expr[2]
+      structExpr = compile_expr expr[1]
+      fieldPtr = compileStructFieldPtr structExpr, expr[2]
 
-        n = localName expr[2].to_s
-        bodyLine "#{n} = load #{fieldPtr[0]} #{fieldPtr[1].to_s}"
-        return [fieldPtr[0].pointeeType, n]
+      n = localName expr[2].to_s
+      bodyLine "#{n} = load #{fieldPtr[0]} #{fieldPtr[1].to_s}"
+      return [fieldPtr[0].pointeeType, n]
     end
 
     def compileSpecialForm expr
@@ -366,10 +378,10 @@ class ModuleCompiler
         return compileLocalVariableAllocation expr
       elsif expr[0].to_s == 'set!'
         return compileSetBang expr
-      elsif expr[0].to_s == 'struct-set!'
-        return compileStructSetBang expr
-      elsif expr[0].to_s == 'struct-get'
-        return compileStructGet expr
+      elsif expr[0].to_s == 'get'
+        return compileGet expr
+      elsif expr[0].to_s == 'struct-field'
+        return compileStructFieldPtr expr
       else
         return compilePrimOpApplication expr
       end
