@@ -1,20 +1,47 @@
 require 'open3'
 require 'tempfile'
 require 'sexpr'
+require 'pp'
 
-class FunType
+class Type
+  def isPrimType? ; false end
+  def isIntType? ; false end
+  def isAlwaysPointedTo? ; false end # structs, function types
+end
+
+class FunType < Type
   attr_reader :retType, :argTypes
   def initialize retType, argTypes
     @retType = retType
     @argTypes = argTypes
   end
-
-  def to_s
-    "#{retType} (#{argTypes.map(&:to_s).join','})"
-  end
+  def isAlwaysPointedTo? ; true end
+  def to_s ; "#{retType} (#{argTypes.map(&:to_s).join','})" end
 end
 
-IntTypes = %q[i1 i8 i16 i32]
+class PrimType < Type
+  attr_reader :llvm
+  def initialize llvm
+    @llvm = llvm
+  end
+  def to_s ; @llvm end
+  def isPrimType? ; end
+  def isIntType? ; @llvm[0...1] == 'i' end
+end
+
+class PointerType < Type
+  attr_reader :pointeeType
+  def initialize pointeeType
+    @pointeeType = pointeeType
+  end
+  def to_s ; "#{@pointeeType}*" end
+end
+
+PrimTypes = {}
+%w[i1 i8 i16 i32 void ...].each {|llvm|
+  PrimTypes[llvm] = PrimType.new llvm
+}
+
 IntBinOps = %q[add sub mul udiv sdiv urem srem shl lshr ashr and or xor]
 IntCmpOps = %q[eq ne ugt uge ult ule sgt sge slt sle]
 
@@ -72,8 +99,9 @@ class ModuleCompiler
   end
 
   def getType typeName
-    if IntTypes.include? typeName
-      return IntTypes[typeName]
+    pp PrimTypes
+    if PrimTypes.include? typeName.to_s
+      return PrimTypes[typeName.to_s]
     end
     raise ArgumentError, "can't find type '#{typeName}'"
   end
@@ -92,7 +120,7 @@ class ModuleCompiler
       end
     }.join ''
     add_definition "#{n} = private unnamed_addr constant [#{str.length+1} x i8] c\"#{emit_chars}\\00\", align 1"
-    result = ["i8*", "getelementptr inbounds ([#{str.length+1} x i8]* #{n}, i32 0, i32 0)"]
+    result = ['i8*', "getelementptr inbounds ([#{str.length+1} x i8]* #{n}, i32 0, i32 0)"]
     @global_strings[str] = result
     return result
   end
@@ -174,7 +202,7 @@ class ModuleCompiler
         funName = expr[0].to_s
         info = funName.split ':'
         badfunc(funName) if info.length < 2
-        badfunc(funName) unless IntTypes.include? info[0]
+        badfunc(funName) unless @moduleCompiler.getType(info[0].to_s).isIntType?
         badfunc(funName) unless IntBinOps.include? info[1] or IntCmpOps.include? info[1]
 
         if IntBinOps.include? info[1]
@@ -258,7 +286,7 @@ class ModuleCompiler
 
     def compile_expr expr
       if expr.class == Fixnum
-        return ["i32", expr]
+        return ['i32', expr]
       elsif expr.class == Symbol
         if @argTypes[expr.to_s]
           return [@argTypes[expr.to_s], '%'+expr.to_s]
