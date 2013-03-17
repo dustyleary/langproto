@@ -37,6 +37,25 @@ class PointerType < Type
   def to_s ; "#{@pointeeType}*" end
 end
 
+class StructType
+  attr_reader :fields, :name
+  def initialize name, fields
+    @name = name.to_s
+    @fields = fields
+  end
+  def getLlvmFullTypeStr
+    "{ #{@fields.map{|f|f[1].to_s}.join', '} }"
+  end
+  def to_s
+    "%struct.#{@name}"
+  end
+  def isAlwaysPointedTo? ; true end
+  def getFieldIndex fieldName
+    @fields.each_with_index {|f,i| return i if f[0].to_s == fieldName.to_s }
+    raise ArgumentError, "no field named '#{fieldName}'"
+  end
+end
+
 PrimTypes = {}
 %w[i1 i8 i16 i32 void ...].each {|llvm|
   PrimTypes[llvm] = PrimType.new llvm
@@ -51,11 +70,13 @@ class ModuleCompiler
   def initialize
     @declares = []
     @definitions = []
+    @structdefs = []
 
     @global_string_index = 0
     @global_strings = {}
 
     @funTypes = {}
+    @structTypes = {}
     add_declare 'printf', FunType.new('i32', ['i8*', '...'])
     add_declare 'strlen', FunType.new('i32', ['i8*'])
     add_declare 'strcat', FunType.new('i8*', ['i8*', 'i8*'])
@@ -72,8 +93,36 @@ class ModuleCompiler
     FunctionCompiler.new(self, funName, funType, funArgs).compile body
   end
 
+  def compile_defstruct tldef
+    raise ArgumentError, "expected [:defstruct ...], got #{tldef.inspect}" unless tldef[0] == :defstruct
+    structName = tldef[1]
+    fieldDefs = tldef[2..-1]
+    fieldNames = {}
+    fields = fieldDefs.map { |fieldDef|
+      fieldName = fieldDef[0]
+      raise ArgumentError, "duplicate name: #{fieldName}" if fieldNames[fieldName]
+      fieldNames[fieldName] = 1
+      fieldType = getType fieldDef[1]
+      [fieldName, fieldType]
+    }
+    @structTypes[structName.to_s] = StructType.new structName, fields
+    add_structdef "%struct.#{structName} = type #{@structTypes[structName.to_s].getLlvmFullTypeStr}"
+  end
+
+  def compile_module tldefs
+    tldefs.each { |tldef|
+      if tldef[0] == :define
+        compile_function tldef
+      elsif tldef[0] == :defstruct
+        compile_defstruct tldef
+      else
+        raise ArgumentError, "can't handle toplevel #{tldef.inspect}"
+      end
+    }
+  end
+
   def llvm_ir
-    @declares.join("\n") + "\n" + @definitions.join("\n")
+    (@structdefs + @declares + @definitions).join "\n"
   end
 
   def add_declare funName, funType
@@ -83,6 +132,10 @@ class ModuleCompiler
 
   def add_definition deftext
     @definitions << deftext
+  end
+
+  def add_structdef deftext
+    @structdefs << deftext
   end
 
   def addFunType funName, funType
@@ -99,9 +152,11 @@ class ModuleCompiler
   end
 
   def getType typeName
-    pp PrimTypes
     if PrimTypes.include? typeName.to_s
       return PrimTypes[typeName.to_s]
+    end
+    if @structTypes.include? typeName.to_s
+      return @structTypes[typeName.to_s]
     end
     raise ArgumentError, "can't find type '#{typeName}'"
   end
@@ -235,19 +290,24 @@ class ModuleCompiler
         end
 
         varName = expr[1]
-        varType = expr[2]
+        varType = @moduleCompiler.getType expr[2]
         @localVarTypes[varName.to_s] = varType
         # TODO: align
-        bodyLine "%#{expr[1]} = alloca #{expr[2]}"
+        bodyLine "%#{expr[1]} = alloca #{varType}"
     end
 
     def compileLocalVarLookup expr
         if expr.class != Symbol
           raise ArgumentError, "var lookup needs Symbol, got #{expr}"
         end
-        n = localName expr.to_s
-        bodyLine "#{n} = load #{@localVarTypes[expr.to_s]}* %#{expr.to_s}"
-        return [@localVarTypes[expr.to_s], n]
+        t = @localVarTypes[expr.to_s]
+        if t.isAlwaysPointedTo?
+          return [@localVarTypes[expr.to_s], expr.to_s]
+        else
+          n = localName expr.to_s
+          bodyLine "#{n} = load #{@localVarTypes[expr.to_s]}* %#{expr.to_s}"
+          return [@localVarTypes[expr.to_s], n]
+        end
     end
 
     def compileSetBang expr
@@ -267,6 +327,34 @@ class ModuleCompiler
         bodyLine "store #{value[0]} #{value[1]}, #{@localVarTypes[expr[1].to_s]}* %#{expr[1].to_s}"
     end
 
+    def compileStructFieldPtr structExpr, fieldName
+        structType = structExpr[0]
+        raise ArgumentError, "expected StructType, got: #{structType}" unless structType.is_a? StructType
+        raise ArgumentError, "expected Symbol, got: #{fieldName}" unless fieldName.is_a? Symbol
+
+        n = localName fieldName.to_s+'.ptr'
+        fieldIndex = structType.getFieldIndex fieldName
+        bodyLine "#{n} = getelementptr inbounds #{structType}* %#{structExpr[1]}, i32 0, i32 #{fieldIndex}"
+        [PointerType.new(structType.fields[fieldIndex][1]), n]
+    end
+
+    def compileStructSetBang expr
+        structExpr = compile_expr expr[1]
+        fieldPtr = compileStructFieldPtr structExpr, expr[2]
+        value = compile_expr expr[3]
+
+        bodyLine "store #{value[0]} #{value[1]}, #{fieldPtr[0]} #{fieldPtr[1].to_s}"
+    end
+
+    def compileStructGet expr
+        structExpr = compile_expr expr[1]
+        fieldPtr = compileStructFieldPtr structExpr, expr[2]
+
+        n = localName expr[2].to_s
+        bodyLine "#{n} = load #{fieldPtr[0]} #{fieldPtr[1].to_s}"
+        return [fieldPtr[0].pointeeType, n]
+    end
+
     def compileSpecialForm expr
       if expr.length == 0
         raise ArgumentError, "unhandled expr: #{expr.inspect}"
@@ -278,6 +366,10 @@ class ModuleCompiler
         return compileLocalVariableAllocation expr
       elsif expr[0].to_s == 'set!'
         return compileSetBang expr
+      elsif expr[0].to_s == 'struct-set!'
+        return compileStructSetBang expr
+      elsif expr[0].to_s == 'struct-get'
+        return compileStructGet expr
       else
         return compilePrimOpApplication expr
       end
@@ -334,10 +426,7 @@ def test_compile result, program
     program = Sexpr.read program
   end
   mc = ModuleCompiler.new
-  program.each { |tldef|
-    raise ArgumentError, "can't handle toplevel #{tldef.inspect}" unless tldef[0] == :define
-    mc.compile_function tldef
-  }
+  mc.compile_module program
 
   llvm = mc.llvm_ir
 
