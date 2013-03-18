@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'sexpr'
+require './sexpr'
 require 'test/unit'
 
 class TestSexpr < Test::Unit::TestCase
