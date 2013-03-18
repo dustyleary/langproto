@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'driver'
+require './driver'
 
 test_compile_expr [24,"1 Hello World 0000000d!\n"], %q[    (printf "1 Hello World %08x!\n" (i32:add 6 7))    ]
 test_compile_expr [24,"2 Hello World ffffffff!\n"], %q[    (printf "2 Hello World %08x!\n" (i32:sub 6 7))    ]

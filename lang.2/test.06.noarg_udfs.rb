@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'driver'
+require './driver'
 
 test_compile [24,"1 Hello World 0000002a!\n"], <<eot
   (define (foo () i32) (i32:mul 7 6))

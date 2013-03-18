@@ -1,6 +1,6 @@
 #!/usr/bin/env ruby
 
-require 'driver'
+require './driver'
 
 test_compile [10,"Hello 7 5\n"], <<eot
     (define (foo ((a i32)) i32) (if (i32:ugt a 5) a 5))
