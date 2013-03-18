@@ -1,6 +1,6 @@
 require 'open3'
 require 'tempfile'
-require 'sexpr'
+require './sexpr'
 require 'pp'
 
 class Type
