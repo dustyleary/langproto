@@ -1,3 +1,4 @@
+cd $(dirname $0)
 
 green="`tput sgr0; tput setaf 2`"
 GREEN="`tput setaf 2; tput bold`"
