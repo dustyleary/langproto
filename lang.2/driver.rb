@@ -227,7 +227,6 @@ class ModuleCompiler
 
     def compileIfApplication expr
       funName = expr[0].to_s
-      badfunc(funName) unless funName == 'if'
 
       if expr.length != 4
         raise ArgumentError, "if expression requires 3 args"
@@ -257,6 +256,28 @@ class ModuleCompiler
       bodyLine "#{n} = phi #{type} [ #{result_then[1]},#{label_then} ], [ #{result_else[1]},#{label_else}]"
 
       return [type, n]
+    end
+
+    def compileWhileLoop expr
+      label_test = localName 'while.test'
+      label_body = localName 'while.body'
+      label_end = localName 'while.end'
+
+      bodyLine "br label #{label_test}"
+      labelLine label_test[1..-1] + ':'
+
+      test = compile_expr expr[1]
+      bodyLine "br i1 #{test[1]}, label #{label_body}, label #{label_end}"
+
+      labelLine label_body[1..-1] + ':'
+      expr[2..-1].each {|e|
+        compile_expr e
+      }
+      bodyLine "br label #{label_test}"
+
+      labelLine label_end[1..-1] + ':'
+
+      return ['i32', 0]
     end
 
     def compilePrimOpApplication expr
@@ -374,6 +395,8 @@ class ModuleCompiler
 
       if expr[0].to_s == 'if'
         return compileIfApplication expr
+      elsif expr[0].to_s == 'while'
+        return compileWhileLoop expr
       elsif expr[0].to_s == 'var'
         return compileLocalVariableAllocation expr
       elsif expr[0].to_s == 'set!'
