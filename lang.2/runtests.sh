@@ -1,9 +1,11 @@
 cd $(dirname $0)
 
-green="`tput sgr0; tput setaf 2`"
-GREEN="`tput setaf 2; tput bold`"
-RED="`tput setaf 1; tput bold`"
-colors_reset="`tput sgr0`"
+if [ -n "$(which tput)" ]; then
+  green="`tput sgr0; tput setaf 2`"
+  GREEN="`tput setaf 2; tput bold`"
+  RED="`tput setaf 1; tput bold`"
+  colors_reset="`tput sgr0`"
+fi
 
 testCaseName="$green"
 passed="${GREEN}# OK"
