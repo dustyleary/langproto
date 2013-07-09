@@ -28,3 +28,6 @@
   )
 )
 
+(define (exec-module module)
+  (print module)
+)
