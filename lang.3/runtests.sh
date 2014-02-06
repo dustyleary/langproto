@@ -9,8 +9,8 @@ fi
 
 passed="${GREEN}# OK"
 
-for f in test*.ss ; do
-    { echo "$green# $f $colors_reset" && csi -s $f && echo -e "$passed"; } || { echo -e "$RED# FAILED: $f\n"; exit 1; }
+for f in ./test*.ss ; do
+    { echo "$green# $f $colors_reset" && $f && echo -e "$passed"; } || { echo -e "$RED# FAILED: $f\n"; exit 1; }
     echo -e "$colors_reset"
 done
 
